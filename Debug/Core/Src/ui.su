@@ -1,0 +1,14 @@
+../Core/Src/ui.c:67:13:field	88	static
+../Core/Src/ui.c:94:13:fields_invalidate	8	static
+../Core/Src/ui.c:96:13:fmt_pos	40	static
+../Core/Src/ui.c:103:13:do_save	8	static
+../Core/Src/ui.c:108:13:request_save	8	static
+../Core/Src/ui.c:111:13:tool_cmd	32	static
+../Core/Src/ui.c:119:13:draw_main_static	32	static
+../Core/Src/ui.c:154:13:draw_sd_static	72	static
+../Core/Src/ui.c:171:13:draw_main_dyn	112	static
+../Core/Src/ui.c:230:13:draw_sd_dyn	16	static
+../Core/Src/ui.c:242:13:on_key_main	56	static
+../Core/Src/ui.c:323:13:on_key_sd	16	static
+../Core/Src/ui.c:337:6:ui_init	8	static
+../Core/Src/ui.c:351:6:ui_tick	32	static

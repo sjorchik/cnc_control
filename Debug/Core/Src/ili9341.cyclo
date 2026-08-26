@@ -1,0 +1,10 @@
+../Core/Src/ili9341.c:15:13:wr_cmd	1
+../Core/Src/ili9341.c:16:13:wr_d8	1
+../Core/Src/ili9341.c:17:13:wr_buf	1
+../Core/Src/ili9341.c:22:13:cmd2	1
+../Core/Src/ili9341.c:24:13:set_win	1
+../Core/Src/ili9341.c:31:6:lcd_init	3
+../Core/Src/ili9341.c:61:6:lcd_fill	5
+../Core/Src/ili9341.c:69:6:lcd_frame	1
+../Core/Src/ili9341.c:76:6:lcd_text	15
+../Core/Src/ili9341.c:101:6:lcd_text_r	2

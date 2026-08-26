@@ -1,0 +1,15 @@
+../Core/Src/fluidnc.c:22:6:fnc_init	1
+../Core/Src/fluidnc.c:27:19:fnc_get	1
+../Core/Src/fluidnc.c:29:6:fnc_rt	1
+../Core/Src/fluidnc.c:31:6:fnc_cmd	1
+../Core/Src/fluidnc.c:37:6:fnc_clear_msg	1
+../Core/Src/fluidnc.c:39:6:fnc_jog	1
+../Core/Src/fluidnc.c:44:6:fnc_jog_cancel	1
+../Core/Src/fluidnc.c:46:6:fnc_run_sd	3
+../Core/Src/fluidnc.c:54:12:parse_xyz	3
+../Core/Src/fluidnc.c:62:13:parse_ip	10
+../Core/Src/fluidnc.c:71:13:parse_status	34
+../Core/Src/fluidnc.c:121:13:handle_line	18
+../Core/Src/fluidnc.c:155:13:pump	7
+../Core/Src/fluidnc.c:168:6:fnc_poll	9
+../Core/Src/fluidnc.c:184:6:fnc_sd_list	3

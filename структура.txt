@@ -1,0 +1,2 @@
+Core/Inc: board.h  ili9341.h  tm1638.h  fluidnc.h  ui.h  font5x7.h
+Core/Src: ili9341.c tm1638.c fluidnc.c ui.c  (+ вставки в main.c)
