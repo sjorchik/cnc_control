@@ -32,7 +32,7 @@
 
 #define SPN_LONG_MS 800
 
-/* Прогресбар: центрований (екран 320, рамка 220 → x=50) */
+/* Прогресбар: центрований */
 #define BAR_FX 50
 #define BAR_FY 26
 #define BAR_FW 220
@@ -42,11 +42,18 @@
 #define BAR_W  216
 #define BAR_H  16
 
-/* Список файлів SD: сітка рядків */
+/* Список файлів SD */
 #define SD_ROW_H  24
 #define SD_Y0     30
 #define SD_TXT_X  22
 #define SD_ARR_X  6
+
+/* Великі координати: scale 3 (цифра 18x24), 3 рядки */
+#define POS_Y0   74
+#define POS_DY   32
+#define MPOS_X   38
+#define WPOS_X   190
+#define POS_W    126
 
 static uint8_t  screen;
 static uint8_t  jog_mode;
@@ -119,7 +126,6 @@ static void lcd_text_center(uint16_t ax, uint16_t ay, uint16_t aw, uint16_t ah,
   lcd_text(x, y, scale, s, fg, bg);
 }
 
-/* Стрілка-курсор "▶" (висота 16px) */
 static void draw_cursor_arrow(uint16_t x, uint16_t y, uint16_t col){
   for(uint8_t i = 0; i < 16; i++){
     uint8_t d = (i < 8) ? i : (15 - i);
@@ -127,16 +133,18 @@ static void draw_cursor_arrow(uint16_t x, uint16_t y, uint16_t col){
   }
 }
 
+/* Координати: рівно 7 символів, мінус біля цифр, вирівняно вправо */
 static void fmt_pos(char *out, float v){
   int mil = (int)(v*100.0f + (v >= 0 ? 0.5f : -0.5f));
   char neg = (mil < 0) ? 1 : 0;
   if(neg) mil = -mil;
+  if(mil > 99999) mil = 99999;
   char tmp[12];
   snprintf(tmp, sizeof(tmp), "%d.%02d", mil/100, mil%100);
   uint8_t len = (uint8_t)strlen(tmp);
   uint8_t pos = 0;
   uint8_t total = (uint8_t)(len + neg);
-  while(pos + total < 8) out[pos++] = ' ';
+  while(pos + total < 7) out[pos++] = ' ';
   if(neg) out[pos++] = '-';
   memcpy(out + pos, tmp, len + 1);
 }
@@ -215,30 +223,32 @@ static void draw_main_static(void){
     lcd_fill(BAR_X - 1, BAR_Y - 1, BAR_W + 2, BAR_H + 2, C_BLACK);
   }
 
-  lcd_text(90, 58, 1, "MPos", C_WHITE, C_BLACK);
-  lcd_text(250, 58, 1, "WPos", C_WHITE, C_BLACK);
+  /* Шапки колонок координат (scale 2, центровані над стовпчиками) */
+  lcd_text(77, 56, 2, "MPos", C_WHITE, C_BLACK);
+  lcd_text(229, 56, 2, "WPos", C_WHITE, C_BLACK);
 
+  /* --- Картка AXIS --- */
   lcd_frame(4, 178, 76, 58, C_WHITE);
   lcd_text_center(4, 178, 76, 29, 2, "AXIS", C_OLIVE, C_BLACK);
   lcd_text_center(4, 207, 76, 29, 2, ax_lock ? "FREE" : "LOCK",
                   ax_lock ? C_OLIVE : C_MAROON, C_BLACK);
 
+  /* --- Картка SPINDLE/LASER --- */
   lcd_frame(89, 178, 111, 58, C_WHITE);
   lcd_fill(90, 182, 109, 20, (edit_mode == 1) ? C_WHITE : C_BLACK);
   lcd_text_center(90, 182, 109, 20, 2, profile ? "LASER" : "SPINDLE",
                   (edit_mode == 1) ? C_BLUE : C_OLIVE,
                   (edit_mode == 1) ? C_WHITE : C_BLACK);
 
+  /* --- Картка FEED --- */
   lcd_frame(209, 178, 107, 58, C_WHITE);
   lcd_fill(210, 182, 105, 20, (edit_mode == 2) ? C_WHITE : C_BLACK);
   lcd_text_center(210, 182, 105, 20, 2, "FEED",
                   (edit_mode == 2) ? C_BLUE : C_OLIVE,
                   (edit_mode == 2) ? C_WHITE : C_BLACK);
-
-  lcd_text(296, 160, 1, "V6", C_OLIVE, C_BLACK);
+  /* "V6" прибрано */
 }
 
-/* ---------- Екран SD: великий шрифт, текст ближче до курсора ---------- */
 static void draw_sd_static(void){
   lcd_fill(0, 0, LCD_W, LCD_H, C_BLACK);
   lcd_text(4, 2, 2, "SD CARD", C_WHITE, C_BLACK);
@@ -294,14 +304,15 @@ static void draw_main_dyn(void){
   if(s->ip[0]){ snprintf(b, sizeof(b), "IP:%s", s->ip); field(120, 12, 1, 196, b, C_OLIVE); }
   else field(120, 12, 1, 196, "", C_OLIVE);
 
+  /* Великі координати: scale 3 (18x24) */
   for(uint8_t a = 0; a < 3; a++){
-    uint16_t y = 74 + a*30;
+    uint16_t y = POS_Y0 + a*POS_DY;
     uint16_t lc = ((s->pins >> a) & 1) ? C_RED : C_WHITE;
     char lb[3]; lb[0] = (char)('X'+a); lb[1] = ':'; lb[2] = 0;
-    field(6, y, 2, 30, lb, lc);
+    field(4, y + 4, 2, 30, lb, lc);
     char t[16];
-    fmt_pos(t, s->mpos[a]); field(64,  y, 2, 96, t, C_WHITE);
-    fmt_pos(t, s->wpos[a]); field(220, y, 2, 96, t, C_WHITE);
+    fmt_pos(t, s->mpos[a]); field(MPOS_X, y, 3, POS_W, t, C_WHITE);
+    fmt_pos(t, s->wpos[a]); field(WPOS_X, y, 3, POS_W, t, C_WHITE);
   }
 
   if(running){
@@ -322,7 +333,6 @@ static void draw_main_dyn(void){
   }
 }
 
-/* Курсор-стрілка навпроти рядка файла */
 static void draw_sd_dyn(void){
   if(sd_cur_drawn != sd_cur){
     if(sd_cur_drawn != 255 && sd_cur_drawn < sd_cnt)
