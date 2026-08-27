@@ -32,25 +32,44 @@
 
 #define SPN_LONG_MS 800
 
-static uint8_t  screen;      /* 0 = main, 1 = sd */
+/* Прогресбар: центрований (екран 320, рамка 220 → x=50) */
+#define BAR_FX 50
+#define BAR_FY 26
+#define BAR_FW 220
+#define BAR_FH 20
+#define BAR_X  52
+#define BAR_Y  28
+#define BAR_W  216
+#define BAR_H  16
+
+/* Список файлів SD: сітка рядків */
+#define SD_ROW_H  24
+#define SD_Y0     30
+#define SD_TXT_X  22
+#define SD_ARR_X  6
+
+static uint8_t  screen;
 static uint8_t  jog_mode;
 static uint8_t  edit_mode;
 static uint16_t feed;
-static uint8_t  profile;     /* 0 = SPINDLE, 1 = LASER */
+static uint8_t  profile;
 static uint8_t  power[2];
 static bool     sp_on, ax_lock, jog_active;
 static uint8_t  sd_cur, sd_cnt;
 static fnc_file_t sd_files[8];
 static uint8_t  fprc = 100, sprc = 100;
-
 static bool     stat_dirty = true;
+
+static bool     jog_dirty = false;
+static bool     edit_dirty = false;
+static bool     ax_dirty = false;
+static bool     prof_dirty = false;
+
 static uint32_t dyn_t;
 static uint8_t  sd_cur_drawn = 255;
 static uint16_t bar_w = 0;
-
 static bool     spn_held, spn_long;
 static uint32_t spn_t;
-
 static settings_t cfg;
 static bool     save_pending;
 static uint32_t save_t;
@@ -58,9 +77,10 @@ static uint32_t save_t;
 static const char *jog_names[5] = {"JOG","0.1","1","10","100"};
 static const char *jog_dist[5]  = {"9999","0.1","1","10","100"};
 
-/* ---------- кеш полів (без блимання) ---------- */
+/* ---------- кеш полів ---------- */
 #define FIELD_N   24
 #define FIELD_STR 40
+
 typedef struct { uint16_t x, y; uint8_t sc; uint16_t col; char s[FIELD_STR]; } fslot_t;
 static fslot_t fslots[FIELD_N];
 
@@ -72,16 +92,13 @@ static void field(uint16_t x, uint16_t y, uint8_t sc, uint16_t w, const char *s,
   while(i < maxc && s[i]) { buf[i] = s[i]; i++; }
   while(i < maxc) buf[i++] = ' ';
   buf[maxc] = 0;
-
   fslot_t *sl = 0;
   for(uint8_t k = 0; k < FIELD_N; k++)
     if(fslots[k].sc && fslots[k].x == x && fslots[k].y == y && fslots[k].sc == sc){ sl = &fslots[k]; break; }
   if(!sl)
     for(uint8_t k = 0; k < FIELD_N; k++)
       if(fslots[k].sc == 0){ sl = &fslots[k]; break; }
-
   if(sl && sl->col == fg && strncmp(sl->s, buf, maxc) == 0) return;
-
   for(i = 0; i < maxc; i++){
     if(!sl || sl->s[i] != buf[i] || sl->col != fg){
       char one[2]; one[0] = buf[i]; one[1] = 0;
@@ -93,11 +110,35 @@ static void field(uint16_t x, uint16_t y, uint8_t sc, uint16_t w, const char *s,
 
 static void fields_invalidate(void){ memset(fslots, 0, sizeof(fslots)); }
 
+static void lcd_text_center(uint16_t ax, uint16_t ay, uint16_t aw, uint16_t ah,
+                            uint8_t scale, const char *s, uint16_t fg, uint16_t bg){
+  uint16_t tw = (uint16_t)strlen(s) * 6 * scale;
+  uint16_t th = 8 * scale;
+  uint16_t x = ax + (aw > tw ? (aw - tw) / 2 : 0);
+  uint16_t y = ay + (ah > th ? (ah - th) / 2 : 0);
+  lcd_text(x, y, scale, s, fg, bg);
+}
+
+/* Стрілка-курсор "▶" (висота 16px) */
+static void draw_cursor_arrow(uint16_t x, uint16_t y, uint16_t col){
+  for(uint8_t i = 0; i < 16; i++){
+    uint8_t d = (i < 8) ? i : (15 - i);
+    lcd_fill(x, y + i, 3 + d, 1, col);
+  }
+}
+
 static void fmt_pos(char *out, float v){
   int mil = (int)(v*100.0f + (v >= 0 ? 0.5f : -0.5f));
-  char sgn = (mil < 0) ? '-' : ' ';
-  if(mil < 0) mil = -mil;
-  snprintf(out, 16, "%c%4d.%02d", sgn, mil/100, mil%100);
+  char neg = (mil < 0) ? 1 : 0;
+  if(neg) mil = -mil;
+  char tmp[12];
+  snprintf(tmp, sizeof(tmp), "%d.%02d", mil/100, mil%100);
+  uint8_t len = (uint8_t)strlen(tmp);
+  uint8_t pos = 0;
+  uint8_t total = (uint8_t)(len + neg);
+  while(pos + total < 8) out[pos++] = ' ';
+  if(neg) out[pos++] = '-';
+  memcpy(out + pos, tmp, len + 1);
 }
 
 static void do_save(void){
@@ -105,14 +146,53 @@ static void do_save(void){
   cfg.power[0] = power[0]; cfg.power[1] = power[1];
   settings_save(&cfg);
 }
+
 static void request_save(void){ save_pending = true; save_t = HAL_GetTick(); }
 
-/* Старт інструмента: M3 + G1 F1000 — рівно як в оригінальній прошивці */
 static void tool_cmd(void){
   char b[24];
   snprintf(b, sizeof(b), "M3 S%u", (unsigned)power[profile] * 10);
   fnc_cmd(b);
   fnc_cmd("G1 F1000");
+}
+
+/* ================= ЧАСТКОВЕ ОНОВЛЕННЯ ================= */
+
+static void draw_jog_buttons(void){
+  const fnc_data_t *s = fnc_get();
+  if(s->state != FNC_RUN){
+    for(uint8_t i = 0; i < 5; i++){
+      uint16_t x = 4 + i*63;
+      uint8_t sel = (jog_mode == i);
+      lcd_fill(x, 26, 60, 26, sel ? C_WHITE : C_BLACK);
+      lcd_frame(x, 26, 60, 26, C_WHITE);
+      lcd_text_center(x, 26, 60, 26, 2, jog_names[i],
+                      sel ? C_BLUE : C_YELLOW, sel ? C_WHITE : C_BLACK);
+    }
+  }
+}
+
+static void draw_edit_mode_fields(void){
+  lcd_fill(90, 182, 109, 20, (edit_mode == 1) ? C_WHITE : C_BLACK);
+  lcd_text_center(90, 182, 109, 20, 2, profile ? "LASER" : "SPINDLE",
+                  (edit_mode == 1) ? C_BLUE : C_OLIVE,
+                  (edit_mode == 1) ? C_WHITE : C_BLACK);
+  lcd_fill(210, 182, 105, 20, (edit_mode == 2) ? C_WHITE : C_BLACK);
+  lcd_text_center(210, 182, 105, 20, 2, "FEED",
+                  (edit_mode == 2) ? C_BLUE : C_OLIVE,
+                  (edit_mode == 2) ? C_WHITE : C_BLACK);
+}
+
+static void draw_axis_lock(void){
+  lcd_text_center(4, 207, 76, 29, 2, ax_lock ? "FREE" : "LOCK",
+                  ax_lock ? C_OLIVE : C_MAROON, C_BLACK);
+}
+
+static void draw_profile(void){
+  lcd_fill(90, 182, 109, 20, (edit_mode == 1) ? C_WHITE : C_BLACK);
+  lcd_text_center(90, 182, 109, 20, 2, profile ? "LASER" : "SPINDLE",
+                  (edit_mode == 1) ? C_BLUE : C_OLIVE,
+                  (edit_mode == 1) ? C_WHITE : C_BLACK);
 }
 
 /* ================= СТАТИКА ================= */
@@ -126,42 +206,50 @@ static void draw_main_static(void){
       uint8_t sel = (jog_mode == i);
       lcd_fill(x, 26, 60, 26, sel ? C_WHITE : C_BLACK);
       lcd_frame(x, 26, 60, 26, C_WHITE);
-      lcd_text(x+6, 33, 1, jog_names[i], sel ? C_BLUE : C_YELLOW, sel ? C_WHITE : C_BLACK);
+      lcd_text_center(x, 26, 60, 26, 2, jog_names[i],
+                      sel ? C_BLUE : C_YELLOW, sel ? C_WHITE : C_BLACK);
     }
   } else {
     lcd_fill(0, 26, LCD_W, 26, C_BLACK);
+    lcd_frame(BAR_FX, BAR_FY, BAR_FW, BAR_FH, C_WHITE);
+    lcd_fill(BAR_X - 1, BAR_Y - 1, BAR_W + 2, BAR_H + 2, C_BLACK);
   }
 
   lcd_text(90, 58, 1, "MPos", C_WHITE, C_BLACK);
   lcd_text(250, 58, 1, "WPos", C_WHITE, C_BLACK);
 
   lcd_frame(4, 178, 76, 58, C_WHITE);
-  lcd_text(10, 184, 1, "AXIS", C_OLIVE, C_BLACK);
-  lcd_text(10, 206, 1, ax_lock ? "LOCK" : "FREE", ax_lock ? C_MAROON : C_OLIVE, C_BLACK);
+  lcd_text_center(4, 178, 76, 29, 2, "AXIS", C_OLIVE, C_BLACK);
+  lcd_text_center(4, 207, 76, 29, 2, ax_lock ? "FREE" : "LOCK",
+                  ax_lock ? C_OLIVE : C_MAROON, C_BLACK);
 
   lcd_frame(89, 178, 111, 58, C_WHITE);
-  lcd_fill(90, 179, 109, 16, (edit_mode == 1) ? C_WHITE : C_BLACK);
-  lcd_text(96, 184, 1, profile ? "LASER" : "SPINDLE",
-           (edit_mode == 1) ? C_BLUE : C_OLIVE, (edit_mode == 1) ? C_WHITE : C_BLACK);
+  lcd_fill(90, 182, 109, 20, (edit_mode == 1) ? C_WHITE : C_BLACK);
+  lcd_text_center(90, 182, 109, 20, 2, profile ? "LASER" : "SPINDLE",
+                  (edit_mode == 1) ? C_BLUE : C_OLIVE,
+                  (edit_mode == 1) ? C_WHITE : C_BLACK);
 
   lcd_frame(209, 178, 107, 58, C_WHITE);
-  lcd_fill(210, 179, 105, 16, (edit_mode == 2) ? C_WHITE : C_BLACK);
-  lcd_text(216, 184, 1, "FEED", (edit_mode == 2) ? C_BLUE : C_OLIVE, (edit_mode == 2) ? C_WHITE : C_BLACK);
+  lcd_fill(210, 182, 105, 20, (edit_mode == 2) ? C_WHITE : C_BLACK);
+  lcd_text_center(210, 182, 105, 20, 2, "FEED",
+                  (edit_mode == 2) ? C_BLUE : C_OLIVE,
+                  (edit_mode == 2) ? C_WHITE : C_BLACK);
 
   lcd_text(296, 160, 1, "V6", C_OLIVE, C_BLACK);
 }
 
+/* ---------- Екран SD: великий шрифт, текст ближче до курсора ---------- */
 static void draw_sd_static(void){
   lcd_fill(0, 0, LCD_W, LCD_H, C_BLACK);
   lcd_text(4, 2, 2, "SD CARD", C_WHITE, C_BLACK);
-  if(sd_cnt == 0) lcd_text(4, 40, 2, "NO FILES", C_RED, C_BLACK);
+  if(sd_cnt == 0) lcd_text(4, 60, 2, "NO FILES", C_RED, C_BLACK);
   for(uint8_t i = 0; i < sd_cnt; i++){
     const char *dn = sd_files[i].name;
     if(!strncmp(dn, "/sd/", 4)) dn += 4;
     else if(dn[0] == '/') dn += 1;
-    char b[44];
-    snprintf(b, sizeof(b), "%.26s %luk", dn, (unsigned long)(sd_files[i].size/1024));
-    lcd_text(24, 30 + i*24, 1, b, C_WHITE, C_BLACK);
+    char b[32];
+    snprintf(b, sizeof(b), "%.16s %luk", dn, (unsigned long)(sd_files[i].size/1024));
+    lcd_text(SD_TXT_X, SD_Y0 + i*SD_ROW_H + 4, 2, b, C_WHITE, C_BLACK);
   }
   lcd_text(4, 228, 1, "Y+/- NAV  XY0=RUN  RST=BACK", C_OLIVE, C_BLACK);
   sd_cur_drawn = 255;
@@ -193,9 +281,11 @@ static void draw_main_dyn(void){
     field(120, 2, 1, 150, nm, C_YELLOW);
     snprintf(b, sizeof(b), "%3u%%", (unsigned)s->sd_pct);
     field(280, 2, 1, 36, b, C_YELLOW);
-    uint16_t bw = (uint16_t)((216u * s->sd_pct) / 100);
-    if(bw > bar_w)      lcd_fill(22 + bar_w, 22, bw - bar_w, 16, C_BLUE);
-    else if(bw < bar_w) lcd_fill(22 + bw, 22, bar_w - bw, 16, C_BLACK);
+
+    uint16_t bw = (uint16_t)((BAR_W * s->sd_pct) / 100);
+    if(bw > BAR_W) bw = BAR_W;
+    if(bw > bar_w)      lcd_fill(BAR_X + bar_w, BAR_Y, bw - bar_w, BAR_H, C_BLUE);
+    else if(bw < bar_w) lcd_fill(BAR_X + bw, BAR_Y, bar_w - bw, BAR_H, C_BLACK);
     bar_w = bw;
   } else {
     field(120, 2, 1, 196, s->msg[0] ? s->msg : "", C_OLIVE);
@@ -215,30 +305,34 @@ static void draw_main_dyn(void){
   }
 
   if(running){
-    snprintf(b, sizeof(b), "F:%5u", (unsigned)s->feed);  field(96, 206, 1, 100, b, C_OLIVE);
-    snprintf(b, sizeof(b), "S:%5u", (unsigned)s->speed); field(96, 222, 1, 100, b, C_OLIVE);
-    snprintf(b, sizeof(b), "F:%3u%%", (unsigned)fprc);   field(216, 206, 1, 90, b, C_OLIVE);
-    snprintf(b, sizeof(b), "S:%3u%%", (unsigned)sprc);   field(216, 222, 1, 90, b, C_OLIVE);
+    snprintf(b, sizeof(b), "F:%5u", (unsigned)s->feed);
+    field(102, 202, 2, 99, b, C_OLIVE);
+    snprintf(b, sizeof(b), "S:%5u", (unsigned)s->speed);
+    field(102, 218, 2, 99, b, C_OLIVE);
+
+    snprintf(b, sizeof(b), "F:%3u%%", (unsigned)fprc);
+    field(226, 202, 2, 95, b, C_OLIVE);
+    snprintf(b, sizeof(b), "S:%3u%%", (unsigned)sprc);
+    field(226, 218, 2, 95, b, C_OLIVE);
   } else {
     snprintf(b, sizeof(b), "%3u%% %s", (unsigned)power[profile], sp_on ? "ON" : "OFF");
-    field(96, 210, 1, 99, b, sp_on ? C_MAROON : C_OLIVE);
+    field(96, 210, 2, 99, b, sp_on ? C_MAROON : C_OLIVE);
     snprintf(b, sizeof(b), "%5u", (unsigned)feed);
-    field(216, 210, 1, 95, b, C_OLIVE);
+    field(232, 210, 2, 95, b, C_OLIVE);
   }
 }
 
+/* Курсор-стрілка навпроти рядка файла */
 static void draw_sd_dyn(void){
   if(sd_cur_drawn != sd_cur){
     if(sd_cur_drawn != 255 && sd_cur_drawn < sd_cnt)
-      lcd_fill(0, 30 + sd_cur_drawn*24, 20, 24, C_BLACK);
-    if(sd_cnt) lcd_fill(6, 30 + sd_cur*24 + 5, 12, 12, C_WHITE);
+      lcd_fill(4, SD_Y0 + sd_cur_drawn*SD_ROW_H, 16, SD_ROW_H, C_BLACK);
+    if(sd_cnt) draw_cursor_arrow(SD_ARR_X, SD_Y0 + sd_cur*SD_ROW_H + 4, C_YELLOW);
     sd_cur_drawn = sd_cur;
   }
 }
 
-/* ================= КНОПКИ =================
- * K_SPND тут НЕ обробляється — тільки в ui_tick.
- */
+/* ================= КНОПКИ ================= */
 static void on_key_main(uint8_t k){
   const fnc_data_t *s = fnc_get();
 
@@ -262,8 +356,16 @@ static void on_key_main(uint8_t k){
   }
 
   switch(k){
-    case K_JOG:  jog_mode = (jog_mode+1) % 5; stat_dirty = true; request_save(); break;
-    case K_SPJG: edit_mode = (edit_mode+1) % 3; stat_dirty = true; break;
+    case K_JOG:
+      jog_mode = (jog_mode+1) % 5;
+      jog_dirty = true;
+      request_save();
+      break;
+
+    case K_SPJG:
+      edit_mode = (edit_mode+1) % 3;
+      edit_dirty = true;
+      break;
 
     case K_XDOWN: case K_XUP: case K_YDOWN:
     case K_YUP:   case K_ZDOWN: case K_ZUP: {
@@ -298,7 +400,6 @@ static void on_key_main(uint8_t k){
       }
       break;
     }
-
     case K_XY0:  if(edit_mode == 0) fnc_cmd("G0 X0 Y0"); else if(edit_mode == 1){ power[profile] = 30; request_save(); } else { feed = 5000; request_save(); } break;
     case K_Z0:   if(edit_mode == 0) fnc_cmd("G0 Z0");    else if(edit_mode == 1){ power[profile] = 30; request_save(); } else { feed = 5000; request_save(); } break;
     case K_XZER: fnc_cmd("G10 L20 P1 X0"); break;
@@ -309,7 +410,11 @@ static void on_key_main(uint8_t k){
     case K_HOME: fnc_cmd("$H"); break;
     case K_HOLD: fnc_rt('!'); break;
     case K_START:fnc_rt('~'); break;
-    case K_AXLK: ax_lock = !ax_lock; fnc_cmd(ax_lock ? "$MD" : "$ME"); stat_dirty = true; break;
+    case K_AXLK:
+      ax_lock = !ax_lock;
+      fnc_cmd(ax_lock ? "$MD" : "$ME");
+      ax_dirty = true;
+      break;
     case K_SDCRD:
       screen = 1; sd_cur = 0;
       fnc_sd_list(sd_files, 8, &sd_cnt);
@@ -358,7 +463,6 @@ void ui_tick(uint32_t now){
 
   uint8_t pr = tm_pressed(), rl = tm_released();
 
-  /* SPND: коротке = вкл/викл по відпусканню, довге = перемикання профілю */
   if(pr == K_SPND && screen == 0 && !running){
     spn_held = true; spn_long = false; spn_t = now;
   } else if(pr){
@@ -370,7 +474,7 @@ void ui_tick(uint32_t now){
       spn_long = true;
       profile ^= 1;
       if(sp_on) tool_cmd();
-      stat_dirty = true;
+      prof_dirty = true;
       request_save();
     }
     if(rl == K_SPND){
@@ -378,7 +482,7 @@ void ui_tick(uint32_t now){
       if(!spn_long){
         sp_on = !sp_on;
         if(sp_on) tool_cmd(); else fnc_cmd("M5");
-        stat_dirty = true;
+        dyn_t = 0;
       }
     }
   } else {
@@ -387,14 +491,12 @@ void ui_tick(uint32_t now){
 
   if(jog_active && rl){ fnc_jog_cancel(); jog_active = false; }
 
-  static uint8_t p_screen = 255, p_jog = 255, p_edit = 255;
-  static uint8_t p_run = 255, p_ax = 255, p_prof = 255;
+  static uint8_t p_screen = 255, p_run = 255;
   uint8_t run = running ? 1 : 0;
-  uint8_t ax  = ax_lock ? 1 : 0;
-  if(screen != p_screen || jog_mode != p_jog || edit_mode != p_edit ||
-     run != p_run || ax != p_ax || profile != p_prof){
-    p_screen = screen; p_jog = jog_mode; p_edit = edit_mode;
-    p_run = run; p_ax = ax; p_prof = profile;
+
+  if(screen != p_screen || run != p_run){
+    p_screen = screen;
+    p_run = run;
     stat_dirty = true;
   }
 
@@ -404,6 +506,17 @@ void ui_tick(uint32_t now){
     bar_w = 0;
     if(screen == 0) draw_main_static(); else draw_sd_static();
     dyn_t = 0;
+    jog_dirty = false;
+    edit_dirty = false;
+    ax_dirty = false;
+    prof_dirty = false;
+  } else {
+    if(screen == 0){
+      if(jog_dirty)  { jog_dirty  = false; draw_jog_buttons(); }
+      if(edit_dirty) { edit_dirty = false; draw_edit_mode_fields(); }
+      if(ax_dirty)   { ax_dirty   = false; draw_axis_lock(); }
+      if(prof_dirty) { prof_dirty = false; draw_profile(); }
+    }
   }
 
   if(now - dyn_t >= 120){
